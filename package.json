@@ -1,0 +1,17 @@
+{
+  "name": "stock-news-discord-bot",
+  "version": "1.0.0",
+  "description": "Discord bot ติดตามข่าวหุ้น real-time + วิเคราะห์ด้วย Groq AI",
+  "main": "bot.js",
+  "scripts": {
+    "start": "node bot.js",
+    "dev": "node --watch bot.js"
+  },
+  "dependencies": {
+    "discord.js": "^14.18.0",
+    "dotenv": "^16.4.5"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}
