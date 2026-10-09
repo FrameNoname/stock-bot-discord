@@ -6,6 +6,8 @@
 
 | คำสั่ง | ตัวอย่าง | คำอธิบาย |
 |--------|----------|-----------|
+| `/help` | `/help` | คู่มือคำสั่ง แสดงเฉพาะผู้เรียก |
+| `/unwatch` | `/unwatch ticker:NVDA` | ลบหุ้นออกจาก watchlist ของเซิร์ฟเวอร์ |
 | `/news` | `/news NVDA` | ข่าวล่าสุด 5 ข่าว + AI วิเคราะห์ |
 | `/price` | `/price AAPL` | ราคาปัจจุบัน, high/low, เปอร์เซ็นต์เปลี่ยน |
 | `/analyze` | `/analyze TSLA question:ควรซื้อไหม` | AI วิเคราะห์เชิงลึก + ตอบคำถาม |
@@ -25,7 +27,7 @@
 1. ไปที่ https://discord.com/developers/applications
 2. กด **New Application** ตั้งชื่อบอท
 3. ไปที่แท็บ **Bot** → กด **Reset Token** → คัดลอก Token
-4. เปิด **Message Content Intent** และ **Server Members Intent**
+4. บอตใช้เฉพาะ **Guilds Intent** ไม่ต้องเปิด Message Content Intent หรือ Server Members Intent
 5. ไปที่ **OAuth2 → URL Generator**:
    - Scopes: เลือก `bot` และ `applications.commands`
    - Bot Permissions: เลือก `Send Messages`, `Embed Links`, `Read Message History`
@@ -105,3 +107,24 @@ pm2 startup
 - **หุ้นไทย SET**: ใช้ Investing.com API หรือ settrade API
 - **Database**: เปลี่ยน watchlist จาก in-memory เป็น SQLite/PostgreSQL
 - **Sentiment score**: แสดงกราฟ sentiment รายสัปดาห์
+
+## การปรับปรุงความเร็วและการใช้งาน
+
+- `/news` แสดงข่าวและราคาก่อน แล้วอัปเดตข้อความเดิมเมื่อ AI วิเคราะห์เสร็จ หาก AI ล้มเหลว ข่าวและราคาจะยังอยู่
+- ใช้แคชราคา 15 วินาที ข่าว 60 วินาที และข้อมูลบริษัท 24 ชั่วโมง ร่วมกันระหว่างคำสั่งและ Dashboard ภายในโปรเซสเดียว
+- คำขอข้อมูลเดียวกันที่เข้ามาพร้อมกันใช้ API request เดียวกัน แคชเก็บสูงสุด 500 รายการ และไม่เก็บผลล้มเหลว
+- จำกัดเวลารอ Finnhub 10 วินาที และ Groq 30 วินาที พร้อมตรวจ HTTP errors
+- `/watch` แจ้งเมื่อเพิ่มซ้ำ รองรับสูงสุด 25 หุ้นต่อเซิร์ฟเวอร์ ใช้ `/unwatch` เพื่อลบ และ `/help` เพื่อดูคำสั่ง
+- Watchlist และการตั้งค่าช่องยังเก็บในหน่วยความจำ จึงรีเซ็ตเมื่อบอตรีสตาร์ต
+
+### ทดสอบ
+
+```bash
+npm ci
+npm test
+```
+
+ชุดทดสอบจำลอง Discord/Finnhub/Groq ไม่ต้องใช้ token ทดสอบการรวมคำขอ แคชหมดอายุ timeout การแสดงข่าวก่อน AI และการจัดการ watchlist
+การทดสอบกับ Discord จริงต้องตั้งค่า `.env` แล้วรัน `npm start` ลอง `/help`, `/price ticker:AAPL`, `/news ticker:AAPL`, `/watch ticker:AAPL` และ `/unwatch ticker:AAPL`
+
+เอกสารอ้างอิง: [Discord interaction responses](https://docs.discord.com/developers/interactions/receiving-and-responding) และ [Node.js AbortSignal.timeout](https://nodejs.org/api/globals.html#static-method-abortsignaltimeoutdelay)

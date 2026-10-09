@@ -1,4 +1,6 @@
 require('dotenv').config();
+const { createCache, fetchJson } = require('./lib/requests');
+const cached = createCache();
 const { Client, GatewayIntentBits, EmbedBuilder, SlashCommandBuilder, REST, Routes } = require('discord.js');
 
 
@@ -11,6 +13,9 @@ const client = new Client({ intents: [GatewayIntentBits.Guilds] });
 
 // ===== SLASH COMMANDS =====
 const commands = [
+  new SlashCommandBuilder().setName('help').setDescription('วิธีใช้และรายการคำสั่งทั้งหมด'),
+  new SlashCommandBuilder().setName('unwatch').setDescription('ลบหุ้นออกจาก watchlist')
+    .addStringOption(o => o.setName('ticker').setDescription('ชื่อหุ้น เช่น AAPL').setRequired(true)),
   new SlashCommandBuilder()
     .setName('news')
     .setDescription('ดูข่าวหุ้นล่าสุด + วิเคราะห์ด้วย AI')
@@ -74,9 +79,8 @@ async function registerCommands(guildId = null) {
 
 // ===== FINNHUB API =====
 async function getStockPrice(ticker) {
-  const url = `https://finnhub.io/api/v1/quote?symbol=${ticker}&token=${FINNHUB_KEY}`;
-  const res = await fetch(url);
-  const data = await res.json();
+  const url = `https://finnhub.io/api/v1/quote?symbol=${encodeURIComponent(ticker)}&token=${FINNHUB_KEY}`;
+  const data = await cached(`quote:${ticker}`, 15_000, () => fetchJson(url));
   if (!data.c || data.c === 0) return null;
   return {
     current: data.c,
@@ -92,22 +96,19 @@ async function getStockPrice(ticker) {
 async function getCompanyNews(ticker) {
   const today = new Date().toISOString().split('T')[0];
   const weekAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString().split('T')[0];
-  const url = `https://finnhub.io/api/v1/company-news?symbol=${ticker}&from=${weekAgo}&to=${today}&token=${FINNHUB_KEY}`;
-  const res = await fetch(url);
-  const data = await res.json();
+  const url = `https://finnhub.io/api/v1/company-news?symbol=${encodeURIComponent(ticker)}&from=${weekAgo}&to=${today}&token=${FINNHUB_KEY}`;
+  const data = await cached(`news:${ticker}`, 60_000, () => fetchJson(url));
   return Array.isArray(data) ? data.slice(0, 5) : [];
 }
 
 async function getCompanyProfile(ticker) {
-  const url = `https://finnhub.io/api/v1/stock/profile2?symbol=${ticker}&token=${FINNHUB_KEY}`;
-  const res = await fetch(url);
-  return await res.json();
+  const url = `https://finnhub.io/api/v1/stock/profile2?symbol=${encodeURIComponent(ticker)}&token=${FINNHUB_KEY}`;
+  return cached(`profile:${ticker}`, 86_400_000, () => fetchJson(url));
 }
 
 async function getGeneralNews() {
   const url = `https://finnhub.io/api/v1/news?category=general&token=${FINNHUB_KEY}`;
-  const res = await fetch(url);
-  const data = await res.json();
+  const data = await cached('general-news', 60_000, () => fetchJson(url));
   return Array.isArray(data) ? data.slice(0, 8) : [];
 }
 
@@ -115,7 +116,7 @@ async function getGeneralNews() {
 async function aiSummarizeNews(newsItems) {
   const newsText = newsItems.map((n, i) => `${i + 1}. ${n.headline} (${n.source})`).join('\n');
 
-  const res = await fetch('https://api.groq.com/openai/v1/chat/completions', {
+  const data = await fetchJson('https://api.groq.com/openai/v1/chat/completions', {
     method: 'POST',
     headers: {
       'Authorization': `Bearer ${GROQ_KEY}`,
@@ -136,14 +137,7 @@ async function aiSummarizeNews(newsItems) {
       temperature: 0.5,
       max_tokens: 800,
     }),
-  });
-
-  if (!res.ok) {
-    const errBody = await res.text();
-    throw new Error(`Groq API error ${res.status}: ${errBody}`);
-  }
-
-  const data = await res.json();
+  }, 30_000);
   return data.choices[0].message.content;
 }
 
@@ -170,7 +164,7 @@ Respond ONLY with a JSON object in this exact format containing exactly 10 stock
   "marketOverview": "บทวิเคราะห์หรือมุมมองภาพรวมตลาดสั้นๆ เป็นภาษาไทย กระชับ ไม่เกิน 3 ประโยค ห้ามใช้ bold/italic"
 }`;
 
-  const res = await fetch('https://api.groq.com/openai/v1/chat/completions', {
+  const data = await fetchJson('https://api.groq.com/openai/v1/chat/completions', {
     method: 'POST',
     headers: {
       'Authorization': `Bearer ${GROQ_KEY}`,
@@ -185,14 +179,7 @@ Respond ONLY with a JSON object in this exact format containing exactly 10 stock
       temperature: 0.3,
       response_format: { type: "json_object" }
     }),
-  });
-
-  if (!res.ok) {
-    const errBody = await res.text();
-    throw new Error(`Groq API error ${res.status}: ${errBody}`);
-  }
-
-  const data = await res.json();
+  }, 30_000);
   const content = data.choices[0].message.content.trim();
   
   try {
@@ -222,7 +209,7 @@ async function aiAnalyze(ticker, newsItems, priceData, userQuestion = null) {
     ? `หุ้น ${ticker}\n${priceText}\nข่าวล่าสุด:\n${newsText}\n\nคำถาม: ${userQuestion}`
     : `วิเคราะห์หุ้น ${ticker}\n${priceText}\nข่าวล่าสุด:\n${newsText}`;
 
-  const res = await fetch('https://api.groq.com/openai/v1/chat/completions', {
+  const data = await fetchJson('https://api.groq.com/openai/v1/chat/completions', {
     method: 'POST',
     headers: {
       'Authorization': `Bearer ${GROQ_KEY}`,
@@ -237,14 +224,7 @@ async function aiAnalyze(ticker, newsItems, priceData, userQuestion = null) {
       temperature: 0.7,
       max_tokens: 1024,
     }),
-  });
-
-  if (!res.ok) {
-    const errBody = await res.text();
-    throw new Error(`Groq API error ${res.status}: ${errBody}`);
-  }
-
-  const data = await res.json();
+  }, 30_000);
   return data.choices[0].message.content;
 }
 
@@ -461,28 +441,27 @@ function priceColor(changePct) {
 
 // ===== COMMAND HANDLERS =====
 async function handleNews(interaction) {
-  const ticker = interaction.options.getString('ticker').toUpperCase();
+  const ticker = interaction.options.getString('ticker').trim().toUpperCase();
   await interaction.deferReply();
 
   try {
     const [news, price, profile] = await Promise.all([
       getCompanyNews(ticker),
       getStockPrice(ticker),
-      getCompanyProfile(ticker),
+      getCompanyProfile(ticker).catch(() => null),
     ]);
 
     if (!news.length && !price) {
       return interaction.editReply(`❌ ไม่พบข้อมูลสำหรับ **${ticker}** — ตรวจสอบชื่อหุ้นอีกครั้ง`);
     }
 
-    const aiText = await aiAnalyze(ticker, news, price);
     const pct = price?.changePct;
     const arrow = pct >= 0 ? '📈' : '📉';
 
     const embed = new EmbedBuilder()
       .setColor(priceColor(pct))
       .setTitle(`${arrow} ${ticker} ${profile?.name ? `— ${profile.name}` : ''}`)
-      .setDescription(aiText)
+      .setDescription('⏳ กำลังวิเคราะห์ด้วย AI — อ่านข่าวและราคาด้านล่างได้เลย')
       .setTimestamp();
 
     if (price) {
@@ -497,9 +476,17 @@ async function handleNews(interaction) {
       const newsField = news.slice(0, 4).map(n =>
         `• [${n.headline.slice(0, 70)}${n.headline.length > 70 ? '…' : ''}](${n.url})`
       ).join('\n');
-      embed.addFields({ name: '📰 ข่าวล่าสุด', value: newsField });
+      embed.addFields({ name: '📰 ข่าวล่าสุด', value: newsField.slice(0, 1024) || 'ไม่มีข่าว' });
     }
 
+    await interaction.editReply({ embeds: [embed] });
+    try {
+      const aiText = await aiAnalyze(ticker, news, price);
+      embed.setDescription(aiText.slice(0, 4000));
+    } catch (err) {
+      console.error('AI analysis failed:', err.message);
+      embed.setDescription('⚠️ AI ยังไม่พร้อมใช้งาน ข้อมูลข่าวและราคายังคงดูได้ กรุณาลอง /analyze อีกครั้งภายหลัง');
+    }
     await interaction.editReply({ embeds: [embed] });
   } catch (err) {
     console.error(err);
@@ -508,11 +495,11 @@ async function handleNews(interaction) {
 }
 
 async function handlePrice(interaction) {
-  const ticker = interaction.options.getString('ticker').toUpperCase();
+  const ticker = interaction.options.getString('ticker').trim().toUpperCase();
   await interaction.deferReply();
 
   try {
-    const [price, profile] = await Promise.all([getStockPrice(ticker), getCompanyProfile(ticker)]);
+    const [price, profile] = await Promise.all([getStockPrice(ticker), getCompanyProfile(ticker).catch(() => null)]);
     if (!price) return interaction.editReply(`❌ ไม่พบราคาสำหรับ **${ticker}**`);
 
     const pct = price.changePct;
@@ -527,7 +514,7 @@ async function handlePrice(interaction) {
         { name: '🔽 Low', value: `$${price.low}`, inline: true },
         { name: '📌 Prev Close', value: `$${price.prevClose}`, inline: true }
       )
-      .setFooter({ text: 'ข้อมูลจาก Finnhub' })
+      .setFooter({ text: 'ข้อมูลจาก Finnhub • แคชราคาไม่เกิน 15 วินาที' })
       .setTimestamp();
 
     await interaction.editReply({ embeds: [embed] });
@@ -538,7 +525,7 @@ async function handlePrice(interaction) {
 }
 
 async function handleAnalyze(interaction) {
-  const ticker = interaction.options.getString('ticker').toUpperCase();
+  const ticker = interaction.options.getString('ticker').trim().toUpperCase();
   const question = interaction.options.getString('question');
   await interaction.deferReply();
 
@@ -549,11 +536,11 @@ async function handleAnalyze(interaction) {
     const embed = new EmbedBuilder()
       .setColor(0x5865f2)
       .setTitle(`🤖 AI วิเคราะห์ — ${ticker}`)
-      .setDescription(aiText)
+      .setDescription(aiText.slice(0, 4000))
       .setTimestamp()
       .setFooter({ text: 'Powered by Groq AI' });
 
-    if (question) embed.addFields({ name: '❓ คำถาม', value: question });
+    if (question) embed.addFields({ name: '❓ คำถาม', value: question.slice(0, 1024) });
 
     await interaction.editReply({ embeds: [embed] });
   } catch (err) {
@@ -563,8 +550,10 @@ async function handleAnalyze(interaction) {
 }
 
 async function handleWatch(interaction) {
-  const ticker = interaction.options.getString('ticker').toUpperCase();
+  const ticker = interaction.options.getString('ticker').trim().toUpperCase();
   const list = getWatchlist(interaction.guildId);
+  if (list.has(ticker)) return interaction.reply({ content: 'ℹ️ มีหุ้นนี้ใน watchlist แล้ว', ephemeral: true });
+  if (list.size >= 25) return interaction.reply({ content: '📋 Watchlist เต็ม (25 ตัว) ใช้ /unwatch เพื่อลบหุ้นก่อน', ephemeral: true });
   list.add(ticker);
   await interaction.reply(`✅ เพิ่ม **${ticker}** เข้า watchlist แล้ว (มีทั้งหมด ${list.size} ตัว)`);
 }
@@ -718,21 +707,51 @@ client.once('ready', async () => {
   }
 });
 
-client.on('interactionCreate', async interaction => {
+async function handleUnwatch(interaction) {
+  const ticker = interaction.options.getString('ticker').trim().toUpperCase();
+  const removed = getWatchlist(interaction.guildId).delete(ticker);
+  await interaction.reply({ content: removed ? '✅ ลบ **' + ticker + '** ออกจาก watchlist แล้ว' : 'ℹ️ ไม่มีหุ้นนี้ใน watchlist', ephemeral: true });
+}
+
+async function handleHelp(interaction) {
+  await interaction.reply({ ephemeral: true, embeds: [new EmbedBuilder()
+    .setColor(0x5865f2).setTitle('📚 คู่มือ Stock Bot')
+    .setDescription(commands.map(c => '/' + c.name + ' — ' + c.description).join('\n'))
+    .setFooter({ text: 'ตัวอย่าง: /price ticker:AAPL • Watchlist สูงสุด 25 ตัว และจะรีเซ็ตเมื่อบอตรีสตาร์ต' })] });
+}
+
+const handlers = { news: handleNews, price: handlePrice, analyze: handleAnalyze,
+  watch: handleWatch, unwatch: handleUnwatch, watchlist: handleWatchlist,
+  help: handleHelp, setnews: handleSetNews, stopnews: handleStopNews,
+  dashboard: handleDashboard, stopdashboard: handleStopDashboard };
+
+async function handleInteraction(interaction) {
   if (!interaction.isChatInputCommand()) return;
-  const { commandName } = interaction;
-  if (commandName === 'news') await handleNews(interaction);
-  else if (commandName === 'price') await handlePrice(interaction);
-  else if (commandName === 'analyze') await handleAnalyze(interaction);
-  else if (commandName === 'watch') await handleWatch(interaction);
-  else if (commandName === 'watchlist') await handleWatchlist(interaction);
-  else if (commandName === 'setnews') await handleSetNews(interaction);
-  else if (commandName === 'stopnews') await handleStopNews(interaction);
-  else if (commandName === 'dashboard') await handleDashboard(interaction);
-  else if (commandName === 'stopdashboard') await handleStopDashboard(interaction);
-});
+  try {
+    if (!interaction.guildId) return await interaction.reply({ content: 'กรุณาใช้คำสั่งในเซิร์ฟเวอร์', ephemeral: true });
+    const ticker = interaction.options.getString('ticker');
+    if (ticker !== null && !/^[A-Z0-9][A-Z0-9.-]{0,14}$/.test(ticker.trim().toUpperCase())) {
+      return await interaction.reply({ content: '❌ รูปแบบชื่อหุ้นไม่ถูกต้อง เช่น AAPL, NVDA หรือ BRK.B', ephemeral: true });
+    }
+    const handler = handlers[interaction.commandName];
+    if (handler) await handler(interaction);
+  } catch (err) {
+    console.error('Command failed:', err.message);
+    const content = '❌ ทำรายการไม่สำเร็จ กรุณาลองใหม่อีกครั้ง';
+    try {
+      if (interaction.deferred || interaction.replied) await interaction.editReply({ content });
+      else await interaction.reply({ content, ephemeral: true });
+    } catch (replyError) { console.error('Cannot reply:', replyError.message); }
+  }
+}
+client.on('interactionCreate', handleInteraction);
+client.on('guildCreate', guild => registerCommands(guild.id));
 
 // ===== START =====
-(async () => {
-  await client.login(DISCORD_TOKEN);
-})();
+if (require.main === module) {
+  client.login(DISCORD_TOKEN).catch(err => {
+    console.error('Login failed:', err.message);
+    process.exitCode = 1;
+  });
+}
+module.exports = { handleInteraction, handleNews, getStockPrice, commands };
